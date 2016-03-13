@@ -1,13 +1,18 @@
-import re
+# -*- coding: utf-8 -*-
+
+import re, logging
 import mechanize
 import time, sys
 from  collections import deque
+import numpy as np
+from bs4 import BeautifulSoup
 
-
-providers = ['http://finance.yahoo.com/news/provider-accesswire',
-                 'http://finance.yahoo.com/news/provider-americancitybusinessjournals',
-                 'http://finance.yahoo.com/news/provider-ap',
-                 'http://finance.yahoo.com/news/provider-the-atlantic',
+class LinksScraper:
+    providers = [
+                 #'http://finance.yahoo.com/news/provider-accesswire',
+                 #'http://finance.yahoo.com/news/provider-americancitybusinessjournals',
+                 #'http://finance.yahoo.com/news/provider-ap',
+                 #'http://finance.yahoo.com/news/provider-the-atlantic',
                  'http://finance.yahoo.com/news/provider-bankrate',
                  'http://finance.yahoo.com/news/provider-barrons',
                  'http://finance.yahoo.com/news/provider-benzinga',
@@ -65,67 +70,125 @@ providers = ['http://finance.yahoo.com/news/provider-accesswire',
                  'http://finance.yahoo.com/news/provider-zacks-scr',
                  'http://finance.yahoo.com/news/provider-zdnet']
 
-
-def scrape_news_links():
-    br = mechanize.Browser()
-    #br.set_handle_refresh(mechanize._http.HTTPRefreshProcessor(), max_time=3)
-    links_file = open('external-links.txt', 'a')
-    retry = 3
-    page = 1
-    recent_links = deque(maxlen=1000)
-    
-    for provider_url in providers:
-        br.open(provider_url)
-        duplicates = 0
-        print "Scraping Port: %s..." %provider_url
+    def __init__(self):
+        # logger setup
+        self.log = logging.getLogger('lnkscraper')
+        self.log.setLevel(logging.DEBUG)
         
-        for i in range(retry):
+        fh = logging.FileHandler('lnkscraper.log')
+        fh.setLevel(logging.DEBUG)
+        ch = logging.StreamHandler()
+        ch.setLevel(logging.DEBUG)
+        
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        fh.setFormatter(formatter)
+        ch.setFormatter(formatter)
+        
+        self.log.addHandler(fh)
+        self.log.addHandler(ch)
+
+        logger = logging.getLogger("mechanize")
+        logger.addHandler(logging.StreamHandler(sys.stdout))
+        logger.setLevel(logging.DEBUG)
+
+        self.retry = 3
+        self.links_file = open('external-links.txt', 'w')
+        self.recent_links = deque(maxlen=1000)
+        self.maxduplicates = 300
+        self.timeout = 60
+
+        self.br = self.setup_browser()
+
+        # proxy list
+        with open('proxies.txt') as f:
+            self.proxies = [l.strip() for l in f.readlines()]
+
+
+    def setup_browser(self):
+        headers  = [('User-Agent', 'Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/48.0.2564.116 Safari/537.36'),
+                    ('Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'),
+                    ('Connection', 'keep-alive')]
+
+        br = mechanize.Browser(factory=mechanize.RobustFactory())
+        #br.set_handle_gzip(True)
+        br.set_handle_redirect(True)
+        br.set_handle_referer(True)
+        br.addheaders = headers
+        
+        return br
+
+
+    def open_url(self, url):
+        for i in range(self.retry):
             try:
-                while True:
-                    links = list(br.links(url_regex="/news/[^\.]+\.html"))
-                    #links = list(br.links(url_regex="bloomberg\.com|cnbc\.com|marketwatch\.com"))
-                    
-                    if len(links) == 0:
-                        raise Exception('NO LINKS...')
-                    
-                    for link in links:
-                        if link.url not in recent_links:
-                            #print link
-                            links_file.write(link.url + '\n')
-                            recent_links.append(link.url)
-                        else:
-                            if link.url == recent_links[-1]:
-                                continue
-                            
-                            print link.url
-                            duplicates += 1
-                            if duplicates >= 300:
-                                raise Exception('DUPLICATE LINKS...')
-    
-                    time.sleep(3)
-                    response = br.follow_link(text_regex=r"Next >>", nr=0)
-                    '''while response.code != 200:
-                        print response.code
-                        print 'WAITING...'''
-                        
-                    assert br.viewing_html()
-                    print "Next Page..."
-                
+                proxy = np.random.choice(self.proxies)
+                self.br.set_proxies({'http':"http://%s" %proxy})
+                res = self.br.open(url, timeout=self.timeout)
+                return (True, res)
             except Exception as e:
-                print e
-                if e.message.startswith('DUPLICATE') or e.message.startswith('NO LINKS'):
-                    print 'Stopping Retry...'
-                    break
+                self.log.error('%s..%s' %(type(e), e))
                 
-                time.sleep(60)
-                try:
-                    br.reload()
-                except:
-                    print "NEXT PROVIDER..."
-                    break
-                
-                print 'Retrying...'
+        return (False, None)
     
+
+    def scrape_news_links(self):        
+        for provider_url in self.providers:
+            succ, res = self.open_url(provider_url)
+            if not succ:
+                self.log.error("Could not start scraping Port: %s.." %provider_url)
+                continue                
+                
+            self.log.info("Scraping Port: %s.." %provider_url)
+            page = BeautifulSoup(res.read())
+            retries = duplicates = 0
+            self.recent_links.clear()
+            
+            while True:
+                #if retries > self.retry:
+                    #self.log.info('Retry limit exceeded...')
+                    #break
+                
+                #links = list(br.links(url_regex="bloomberg\.com|cnbc\.com|marketwatch\.com"))
+                #links = list(self.br.links(url_regex="/news/[^\.]+\.html"))
+                request = self.br.request
+                links = [l.a.get('href') for l in page.select('.txt')]
+                self.log.info('#links found: %d' %len(links))
+                
+                if len(links) == 0:
+                    self.log.error('No Links..')
+                    #self.log.info('Retrying..')
+                    #retries += 1
+                    with open('lastpage.html', 'w') as f:
+                        print res.info()
+                        f.write(unicode(res.read()).encode('utf-8'))
+                        self.log.info('failed..page contents written to lastpage.html')
+                    
+                    break
+                
+                for link in links:
+                    #if link.url not in self.recent_links:
+                    if link not in self.recent_links:
+                        self.links_file.write(link + '\n')
+                        self.recent_links.append(link)
+                    else:
+                        #if link.url == self.recent_links[-1]:
+                        duplicates += 1
+                        continue
+
+                self.log.info('Duplicate-links so far: %d' %duplicates)
+                               
+                if duplicates >= self.maxduplicates:
+                    self.log.error('Duplicate-links limit exceeded..')
+                    self.log.info('Next Provider...')
+                    break
+
+                # next page
+                res = self.br.click_link(text_regex=r"Next >>")
+                self.log.info("Next Page...")                    
+                time.sleep(5)           # throttle
+                
+
 
 if __name__ == '__main__':
-    scrape_news_links()
+    lnkScraper = LinksScraper()
+    lnkScraper.scrape_news_links()
