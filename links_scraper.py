@@ -131,10 +131,7 @@ class LinksScraper:
         return (False, None)
     
 
-    def scrape_news_links(self):
-        #br.set_handle_refresh(mechanize._http.HTTPRefreshProcessor(), max_time=3)
-        #page = 1
-        
+    def scrape_news_links(self):        
         for provider_url in self.providers:
             succ, res = self.open_url(provider_url)
             if not succ:
@@ -154,8 +151,6 @@ class LinksScraper:
                 #links = list(br.links(url_regex="bloomberg\.com|cnbc\.com|marketwatch\.com"))
                 #links = list(self.br.links(url_regex="/news/[^\.]+\.html"))
                 request = self.br.request
-                #print 'headers:',request.header_items()
-                #print request.get_data()
                 links = [l.a.get('href') for l in page.select('.txt')]
                 self.log.info('#links found: %d' %len(links))
                 
@@ -192,25 +187,8 @@ class LinksScraper:
                 self.log.info("Next Page...")                    
                 time.sleep(5)           # throttle
                 
-                '''while response.code != 200:
-                    print response.code
-                    print 'WAITING...'''
-                '''try:
-                    br.reload()
-                except:
-                    self.log.info("Next Provider...")
-                    break'''
-                    
+
 
 if __name__ == '__main__':
-    #scrape_news_links()
-    '''headers  = [('User-Agent', 'Mozilla/5.0 (Windows NT 5.1; rv:14.0) Gecko/20100101 Firefox/14.0.1'),
-                ('Accept-Encoding', 'gzip, deflate, sdch')]
-    br = mechanize.Browser()
-    br.addheaders = headers
-    br.open("http://stackoverflow.com")
-    request = br.request
-    print request.header_items()'''
-
     lnkScraper = LinksScraper()
     lnkScraper.scrape_news_links()
