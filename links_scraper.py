@@ -1,18 +1,24 @@
 # -*- coding: utf-8 -*-
 
-import re, logging
-import mechanize
-import time, sys
+import re, logging, time, sys
 from  collections import deque
+from urlparse import urljoin
+
+from selenium import webdriver
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+
 import numpy as np
 from bs4 import BeautifulSoup
 
 class LinksScraper:
     providers = [
-                 #'http://finance.yahoo.com/news/provider-accesswire',
-                 #'http://finance.yahoo.com/news/provider-americancitybusinessjournals',
-                 #'http://finance.yahoo.com/news/provider-ap',
-                 #'http://finance.yahoo.com/news/provider-the-atlantic',
+                 'http://finance.yahoo.com/news/provider-accesswire',
+                 'http://finance.yahoo.com/news/provider-americancitybusinessjournals',
+                 'http://finance.yahoo.com/news/provider-ap',
+                 'http://finance.yahoo.com/news/provider-the-atlantic',
                  'http://finance.yahoo.com/news/provider-bankrate',
                  'http://finance.yahoo.com/news/provider-barrons',
                  'http://finance.yahoo.com/news/provider-benzinga',
@@ -87,105 +93,136 @@ class LinksScraper:
         self.log.addHandler(fh)
         self.log.addHandler(ch)
 
-        logger = logging.getLogger("mechanize")
-        logger.addHandler(logging.StreamHandler(sys.stdout))
-        logger.setLevel(logging.DEBUG)
-
-        self.retry = 3
+        self.retry = 5
         self.links_file = open('external-links.txt', 'w')
         self.recent_links = deque(maxlen=1000)
         self.maxduplicates = 300
-        self.timeout = 60
+        self.timeout = 40
+        self.YF_root = 'http://finance.yahoo.com'
 
-        self.br = self.setup_browser()
+        #self.br = self.setup_browser()
 
         # proxy list
         with open('proxies.txt') as f:
             self.proxies = [l.strip() for l in f.readlines()]
 
 
-    def setup_browser(self):
+    def _setup_browser(self, prx=None):
         headers  = [('User-Agent', 'Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/48.0.2564.116 Safari/537.36'),
                     ('Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'),
                     ('Connection', 'keep-alive')]
 
-        br = mechanize.Browser(factory=mechanize.RobustFactory())
-        #br.set_handle_gzip(True)
-        br.set_handle_redirect(True)
-        br.set_handle_referer(True)
-        br.addheaders = headers
+        dcap = dict(DesiredCapabilities.PHANTOMJS)
+        #dcap["phantomjs.page.settings.userAgent"] = (
+        #"Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/48.0.2564.116 Safari/537.36"
+        #)
+        
+        if prx:
+            service_args = ['--proxy=%s' %prx, '--proxy-type=http']
+        else:
+            service_args = None
+
+        br = webdriver.PhantomJS(desired_capabilities=dcap, service_args=service_args)
+        br.implicitly_wait(self.timeout)
+        driver.set_page_load_timeout(self.timeout) 
         
         return br
 
 
-    def open_url(self, url):
+    def _open_url(self, url):
         for i in range(self.retry):
             try:
+                if self.br:         # restart service with new proxy
+                    self.br.quit()
+                    
                 proxy = np.random.choice(self.proxies)
-                self.br.set_proxies({'http':"http://%s" %proxy})
-                res = self.br.open(url, timeout=self.timeout)
+                self.br = self._setup_browser(prx=proxy)
+                res = self.br.get(url)
                 return (True, res)
+            
             except Exception as e:
                 self.log.error('%s..%s' %(type(e), e))
                 
         return (False, None)
     
 
-    def scrape_news_links(self):        
+    def scrape_news_links(self):
+        wait = WebDriverWait(self.br, 30)
+        
         for provider_url in self.providers:
-            succ, res = self.open_url(provider_url)
+            succ, res = self._open_url(provider_url)
+            
             if not succ:
-                self.log.error("Could not start scraping Port: %s.." %provider_url)
+                self.log.error("Could not start scraping provider: %s.." %provider_url)
                 continue                
                 
-            self.log.info("Scraping Port: %s.." %provider_url)
-            page = BeautifulSoup(res.read())
+            self.log.info("Scraping provider: %s.." %provider_url)
             retries = duplicates = 0
+            last_title = ''
             self.recent_links.clear()
             
             while True:
-                #if retries > self.retry:
-                    #self.log.info('Retry limit exceeded...')
-                    #break
+                if retries > self.retry:
+                    self.log.info('Retry limit exceeded...moving to next provider')
+                    break
                 
                 #links = list(br.links(url_regex="bloomberg\.com|cnbc\.com|marketwatch\.com"))
-                #links = list(self.br.links(url_regex="/news/[^\.]+\.html"))
-                request = self.br.request
-                links = [l.a.get('href') for l in page.select('.txt')]
-                self.log.info('#links found: %d' %len(links))
+                links = self.br.find_elements_by_css_selector('.txt a')
+                self.log.debug('#links found: %d' %len(links))
+
+                # test for repeated pages
+                if last_title and last_title == links[-1].text:
+                    self.log.debug('page repeated..')
+                    succ, res = self._open_url(provider_url)     # retry  with new proxy          
+                    if not succ:
+                        break
+                    last_title = ''
+                    retries += 1
+                    continue
+
+                last_title = links[-1].text 
                 
                 if len(links) == 0:
-                    self.log.error('No Links..')
-                    #self.log.info('Retrying..')
-                    #retries += 1
+                    self.log.error('No Links found..')
+
                     with open('lastpage.html', 'w') as f:
-                        print res.info()
-                        f.write(unicode(res.read()).encode('utf-8'))
+                        f.write(unicode(res).encode('utf-8'))
                         self.log.info('failed..page contents written to lastpage.html')
-                    
                     break
                 
                 for link in links:
-                    #if link.url not in self.recent_links:
+                    link = link.get_attribute('href')
+
+                    if link.startswith('/news'):        # local link
+                        link = urljoin(self.YF_root, link)
+                    
                     if link not in self.recent_links:
                         self.links_file.write(link + '\n')
                         self.recent_links.append(link)
                     else:
-                        #if link.url == self.recent_links[-1]:
                         duplicates += 1
                         continue
 
-                self.log.info('Duplicate-links so far: %d' %duplicates)
+                self.log.debug('Duplicate-links so far: %d' %duplicates)
                                
-                if duplicates >= self.maxduplicates:
-                    self.log.error('Duplicate-links limit exceeded..')
-                    self.log.info('Next Provider...')
-                    break
+                #if duplicates >= self.maxduplicates:
+                #    self.log.error('Duplicate-links limit exceeded..moving to next Provider')
+                #    break
 
                 # next page
-                res = self.br.click_link(text_regex=r"Next >>")
+                elem = self.br.find_element_by_partial_link_text("Next >>")
+                elem.click()
+
+                # wait untill javascript complete loading data
+                try:
+                    waitResult = wait.until(EC.staleness_of(links[0]))
+                except:
+                    self.log.error('Script timeout..')
+                    retries += 1
+                    continue
+                
                 self.log.info("Next Page...")                    
-                time.sleep(5)           # throttle
+                time.sleep(1)           # throttle
                 
 
 
