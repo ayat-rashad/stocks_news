@@ -1,4 +1,4 @@
-from distributed_scraper import distributed_scraper
+from distributed_process import scrape_links, read_news, chunk_result
 
 providers = [    'http://finance.yahoo.com/news/provider-accesswire',
                  'http://finance.yahoo.com/news/provider-americancitybusinessjournals',
@@ -62,14 +62,19 @@ providers = [    'http://finance.yahoo.com/news/provider-accesswire',
                  'http://finance.yahoo.com/news/provider-zdnet'
             ]
 
+
 if __name__ == '__main__':
-    proxies = []
+    '''proxies = []
 
     with open('proxies.txt') as f:
         proxies = [l.strip() for l in f.readlines()]
 
     if not proxies:
-        raise Exception('proxies list is empty.')
+        raise Exception('proxies list is empty.')'''
 
-    for provider in providers[:3]:
-        distributed_scraper.delay([provider], proxies) 
+    result_q = deque()
+
+    for provider in providers:
+        res = (scrape_links.s(provider) | chunk_result.s(read_news, CHUNK_SIZE) | store_data.s())()
+        result_q.append(res)
+    

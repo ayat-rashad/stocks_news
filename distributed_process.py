@@ -20,12 +20,11 @@ import numpy as np
 from bs4 import BeautifulSoup
 
 # celery app
-app = Celery('distributed_scraper', broker='amqp://guest@localhost//')
+app = Celery('distributed_process', broker='amqp://guest@localhost//', backend='redis://')
 
 
 class LinksScraper:
-    
-    def __init__(self, providers, proxies):
+    def __init__(self, providers, proxies='proxies.txt', retry=5, timeout=60):
         # logger setup
         self.log = logging.getLogger('lnkscraper')
         self.log.setLevel(logging.DEBUG)
@@ -42,16 +41,19 @@ class LinksScraper:
         self.log.addHandler(fh)
         self.log.addHandler(ch)
 
-        self.retry = 10
+        self.retry = retry
         self.recent_links = deque(maxlen=1000)
-        self.maxduplicates = 300
-        self.timeout = 80 
+        self.timeout = timeout 
         self.YF_root = 'http://finance.yahoo.com'
 
         self.br = self._setup_browser()
 
-        # proxy list
-        self.proxies = proxies
+        if hasattr(proxies, '__iter__'):    # proxy list
+            self.proxies = proxies
+        elif isinstance(proxies, str):      # read from file
+            with open(proxies) as f:
+                self.proxies = [l.strip() for l in f.readlines()]
+                
         # news providers to scrape
         self.providers = providers
         
@@ -98,6 +100,7 @@ class LinksScraper:
     
 
     def scrape_news_links(self):
+        news_links = []
         
         for provider_url in self.providers:
             succ, res = self._open_url(provider_url)
@@ -165,6 +168,7 @@ class LinksScraper:
                     if link not in self.recent_links:
                         self.links_file.write('%s, "%s" \n' %(link, date))
                         self.recent_links.append(link)
+                        news_links.append((link, date))
                     else:
                         duplicates += 1
 
@@ -204,12 +208,147 @@ class LinksScraper:
                 
                 self.log.info("Next Page...")
                 time.sleep(5)           # throttle                
+
+        self.br.quit()
+    
+        return news_inks
+
+#################################################################################
+
+import ner
+import urllib2
+from dateutil.parser import parse
+
+class NewsReader:
+    def __init__(self, links, tagger_port=9191, proxies='proxies.txt', retry=3):
+        # Stanford NER client
+        self.tagger = ner.SocketNER(host='127.0.0.1', port=tagger_port)
+
+        # logger setup
+        self.log = logging.getLogger('nreader')
+        self.log.setLevel(logging.DEBUG)
+        
+        fh = logging.FileHandler('nreader.log')
+        fh.setLevel(logging.DEBUG)
+        ch = logging.StreamHandler()
+        ch.setLevel(logging.INFO)
+        
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        fh.setFormatter(formatter)
+        ch.setFormatter(formatter)
+        
+        self.log.addHandler(fh)
+        self.log.addHandler(ch)
+
+        self.retry = retry
+        self.links = links
+        self.timeout = 30
+        
+        if hasattr(proxies, '__iter__'):    # proxy list
+            self.proxies = proxies
+        elif isinstance(proxies, str):      # read from file
+            with open(proxies) as f:
+                self.proxies = [l.strip() for l in f.readlines()]
                 
+        
+    def read_news(self):
+        result = []         # scraped and tagged news
+        proxy = None
+
+        if hasattr(self, 'proxies'):
+            proxy = np.random.choice(self.proxies)
+            
+        opener = urllib2.build_opener(urllib2.ProxyHandler({'http':proxy}))
+
+        for link, date in self.links:
+            news = {'link': link, 'date': date}
+            content = ''
+            
+            for i in range(self.retry):
+                try:
+                    page = opener.open(link, timeout=self.timeout).read()
+                    break
+                except Exception as e:
+                    print type(e), e
+                    # retry with different proxy
+                    proxy = None
+                    if hasattr(self, 'proxies'):
+                        proxy = np.random.choice(self.proxies)
+                    opener = urllib2.build_opener(urllib2.ProxyHandler({'http':proxy}))
+            else:
+                self.log.error('could not read news at: %s' %link)
+                continue
+
+            parser = BeautifulSoup(page)      
+            con_finders = ['.body', '.article-body__content',   # find news body 
+                           '#article_body', '#article-body']
+            
+            for finder in con_finders:
+                try:
+                    content = parser.select(finder)[0].text
+                    break
+                except:
+                    pass
+
+            if not content:
+                self.log.error('could not find content..')
+                self.log.debug('news link: %s..' %link)
+                continue
+                    
+            news['content'] = content
+            nes = self.ner_tag(content)
+
+            if nes:
+                news['nes'] = nes
+            else:
+                self.log.debug('news link: %s..' %link)
+                continue
+            
+            result.append(news)
+
+        return result
+
+
+    def ner_tag(self, content):
+        try:
+            nes = self.tagger.get_entities(content)
+            return nes
+        
+        except Exception as e:
+            self.log.error('could not tag news content..%s' %e)
+            return False
+
+####################################################################
+
+# find news links using screen scraping (Selenium)
+@app.task
+def scrape_links(providers, proxies=None):
+    scraper = LinksScraper(providers, retry=3, proxies=proxies, timeout=80)
+    res = scraper.scrape_news_links()
+
+    if res:
+        return res
+    else:
+        raise Exception('Did not receive results.')
+
+
+# scrape news and find NES
+@app.task
+def read_news(links, proxies=None, retry=3):
+    nreader = NewsReader(links, retry=3)
+    news = nreader.read_news()
+
+    return news
+
+from celery import group
 
 @app.task
-def distributed_scraper(providers, proxies):
-    scraper = LinksScraper(providers, proxies)
-    scraper.scrape_news_links()
+def chunk_result(result, tsk, chunk_size):
+    return group(tsk.s(res) for res in np.split(np.array(result), chunk_size))()
+    
+    
+    
 
+                                  
 
     
