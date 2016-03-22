@@ -1,11 +1,10 @@
-from distributed_process import scrape_links, read_news, chunk_result
+from distributed_process import scrape_links, read_news, chunk_read_news
 
 providers = [    'http://finance.yahoo.com/news/provider-accesswire',
                  'http://finance.yahoo.com/news/provider-americancitybusinessjournals',
                  'http://finance.yahoo.com/news/provider-ap',
                  'http://finance.yahoo.com/news/provider-the-atlantic',
                  'http://finance.yahoo.com/news/provider-bankrate',
-                 'http://finance.yahoo.com/news/provider-barrons',
                  'http://finance.yahoo.com/news/provider-benzinga',
                  'http://finance.yahoo.com/news/provider-bloomberg',
                  'http://finance.yahoo.com/news/provider-businessinsider',
@@ -56,7 +55,6 @@ providers = [    'http://finance.yahoo.com/news/provider-accesswire',
                  'http://finance.yahoo.com/news/provider-thomsonreuters',
                  'http://finance.yahoo.com/news/provider-usnews',
                  'http://finance.yahoo.com/news/provider-usatoday',
-                 'http://finance.yahoo.com/news/provider-the-wall-street-journal',
                  'http://finance.yahoo.com/news/provider-zacks',
                  'http://finance.yahoo.com/news/provider-zacks-scr',
                  'http://finance.yahoo.com/news/provider-zdnet'
@@ -64,17 +62,7 @@ providers = [    'http://finance.yahoo.com/news/provider-accesswire',
 
 
 if __name__ == '__main__':
-    '''proxies = []
-
-    with open('proxies.txt') as f:
-        proxies = [l.strip() for l in f.readlines()]
-
-    if not proxies:
-        raise Exception('proxies list is empty.')'''
-
-    result_q = deque()
-
     for provider in providers:
-        res = (scrape_links.s(provider) | chunk_result.s(read_news, CHUNK_SIZE) | store_data.s())()
-        result_q.append(res)
+        res = (scrape_links.s([provider]) | chunk_read_news.s(100))()
+
     

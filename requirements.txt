@@ -1,0 +1,14 @@
+pandas==0.17.1
+numpy==1.10.4
+ner==0.1
+nltk==3.1
+fuzzywuzzy==0.8.2
+celery==3.1.23
+selenium==2.52.0
+beautifulsoup4==4.2.1
+dateutil
+pymongo==3.2
+amqp==1.4.9
+redis==2.10.5
+
+
